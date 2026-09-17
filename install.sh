@@ -148,8 +148,12 @@ case ":$PATH:" in
 	*) log "WARNING: /usr/local/bin not on \$PATH in this shell, use $NB_BIN_LINK directly, or add it to PATH" ;;
 esac
 
-"$NB_INSTALL_DIR/netbird" service run --config "$NB_CONFIG" --log-file "$NB_LOG_DIR/client.log" > "$NB_LOG_DIR/daemon.log" 2>&1 < /dev/null &
-sleep 1
+if [ -S /var/run/netbird.sock ]; then
+	log "daemon already running, not starting another"
+else
+	"$NB_INSTALL_DIR/netbird" service run --config "$NB_CONFIG" --log-file "$NB_LOG_DIR/client.log" > "$NB_LOG_DIR/daemon.log" 2>&1 < /dev/null &
+	sleep 1
+fi
 
 log ""
 log "netbird installed and running. Enroll it with your preferred method, e.g.:"

@@ -1,0 +1,2 @@
+# loop0 appears once per boot, after the rootfs is up.
+KERNEL=="loop0", RUN+="/usr/local/netbird/boot.sh"

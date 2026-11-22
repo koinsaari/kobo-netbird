@@ -1,79 +1,57 @@
-# kobo-netbird
+# Kobo Netbird
 
-Run [netbird](https://netbird.io) on a rooted Kobo e-reader, so it can join your mesh network and reach a self-hosted server directly (e.g. OPDS/Calibre book-sync via KOReader), without exposing SSH to the internet.
+Run [netbird](https://netbird.io) on a Kobo e-reader, so it joins your mesh and reaches self-hosted services directly (e.g. an OPDS catalog in KOReader). Kobo firmware installs `.kobo/KoboRoot.tgz` from its USB drive at boot.
 
-Tested on a Mediatek `mt8113t-ntx` Kobo, firmware `4.9.77.4.45.23646`. Other models should work since the installer detects CPU arch and tmpfs layout rather than assuming this one's, but they're untested. PRs and issue reports for other device/firmware combos are welcome.
+Tested on a Kobo Libra Colour, firmware `4.45.23655`. Other 4.x models should work too.
 
-## Prerequisites
+## Install
 
-Stock Kobo firmware has a native, undocumented SSH toggle: rename `.kobo/ssh-disabled` to `.kobo/ssh-enabled` on the FAT32 partition (mount via USB), reboot, then `ssh root@<device-ip>`. First login prompts you to set a root password. No jailbreak or NickelMenu/KFMon/KOReader needed; if you have KOReader and want to keep it, it doesn't interfere.
+1. Download `kobo-netbird.zip` from the [latest release](https://github.com/koinsaari/kobo-netbird/releases/latest).
+2. Plug the Kobo in, tap **Connect**, and unzip onto the root of the `KOBOeReader` drive. It adds `.kobo/KoboRoot.tgz` and `.adds/netbird/env`.
+3. Edit `.adds/netbird/env`: paste a setup key in `NB_SETUP_KEY=`, and set `NB_MANAGEMENT_URL` if you self-host. A one-off key with a short expiry is best.
+4. Eject, restart the Kobo, and turn Wi-Fi on.
 
-## Usage
+The Kobo moves the key off the USB drive, enrols, and deletes it. The peer appears in your dashboard once Wi-Fi is up.
 
-SSH into the device as root, then:
+To update, drop a newer `KoboRoot.tgz` into `.kobo/` and restart. Enrolment lives in `/etc/netbird` and survives updates.
 
-```sh
-wget -qO- https://raw.githubusercontent.com/koinsaari/kobo-netbird/main/install.sh | sh
-```
-
-or clone the repo onto the device and run `./install.sh` directly.
-
-Enroll:
+## Verify or build it yourself
 
 ```sh
-netbird up --setup-key <YOUR_SETUP_KEY>
-# or, for interactive SSO:
-netbird up
+gh attestation verify KoboRoot.tgz -R koinsaari/kobo-netbird
 ```
 
-Check it's alive: `netbird status`. Reboot once to confirm it comes back on its own.
+`SHA256SUMS` lists the upstream netbird asset (compare with netbird's own `checksums.txt`) and every file in the bundle. Or build it yourself with `make` (GNU tar; on macOS `make TAR=gtar`) and use `build/`.
 
-Pin a version instead of fetching latest: `NETBIRD_VERSION=0.78.2 ./install.sh`.
+## What it installs
 
-Uninstall: `./uninstall.sh` (stops the daemon, removes binary/config/autostart hook; peer stays enrolled on your mesh dashboard until removed there too).
+| path | what |
+|---|---|
+| `/opt/netbird/netbird` | upstream armv6 binary |
+| `/etc/ssl/certs/ca-certificates.crt` | Mozilla CA bundle via curl.se; stock firmware has none |
+| `/etc/udev/rules.d/97-netbird.rules` | runs the hook once per boot |
+| `/usr/local/netbird/boot.sh` | starts the daemon with state in `/etc/netbird`, enrols once |
 
-## What it does
+## Notes
 
-1. Detects CPU arch, picks the matching netbird release.
-2. Installs a CA bundle (`/etc/ssl/certs/ca-certificates.crt`) if missing. Stock firmware ships none, which breaks all outbound TLS for statically-linked Go binaries like netbird.
-3. Downloads and checksum-verifies the latest netbird release to `/opt/netbird/netbird`.
-4. Points netbird's config/log/state at a persistent directory (`/etc/netbird` by default), not wherever it'd otherwise land. `/var/lib` is a small tmpfs on stock firmware, wiped every boot, which silently loses your mesh enrollment if unhandled.
-5. Symlinks `netbird` onto `/usr/local/bin`.
-6. Hooks a small init script into Kobo's boot sequence so the daemon survives reboot.
+- The peer goes offline while the Kobo sleeps (Wi-Fi off) and reconnects on wake.
+- Netbird rewrites `/etc/resolv.conf` for mesh DNS, but the firmware's glibc 2.19 reads it once per process. An app started before netbird keeps the old resolver until restarted; for KOReader, a user patch calling `__res_init()` before each HTTP request fixes it.
+- A firmware update may replace system files; drop `KoboRoot.tgz` in again.
 
-Doesn't enroll the device on any mesh, doesn't touch SSH config. You do enrollment yourself, however you prefer.
+## Uninstall
 
-## Kobo firmware internals
+Enable SSH by renaming `.kobo/ssh-disabled` to `.kobo/ssh-enabled` and rebooting. Commands must go through stdin, because root's forced login script ignores ssh arguments:
 
-- Onboard FAT32 (`/mnt/onboard`, the USB mass-storage view) is not the rootfs. Nickel/rcS read specific paths from it (`.kobo/`, `KoboRoot.tgz`) but it's a separate filesystem from where daemons and configs live.
-- Real rootfs is ext4, reachable only via SSH. No systemd/upstart, no `rcN.d` scheme: boot runs one monolithic `/etc/init.d/rcS` script.
-- `/var/lib`, `/var/log`, `/var/run` are mounted tmpfs by `rcS` on every boot. `/etc`, `/opt`, `/usr/local` are real ext4, persistent.
-- No dm-verity, no A/B slot switching, no process that reverts manual `rcS` edits. Something that looked exactly like that was actually an unsynced write lost on an unclean shutdown, see Troubleshooting.
-- `mmcblk0p10` is the active rootfs; `mmcblk0p11` is a same-size second rootfs partition (`UBOOT_RECOVERY` in `rcS`), confirmed to hold an older unrelated firmware snapshot, not a live mirror, only reachable via the factory-reset path.
-- Real OpenSSH, not dropbear. `Match User root` sets `ForceCommand /etc/ssh/initial_ssh_setup.sh`, which overrides every session type (shell, exec, SFTP): any command passed as an ssh argument is ignored, and scp/sftp never negotiate. Pipe commands through stdin (`echo "cmd" | ssh host`) and transfer files by base64-encoding through an ssh-piped heredoc.
-- `/etc/passwd`'s root homedir is `/`, not `/root`. Combined with `sshd_config`'s relative `AuthorizedKeysFile .ssh/authorized_keys`, sshd looks for `//.ssh/authorized_keys` and silently ignores a key placed at `/root/.ssh/authorized_keys`. Mirror the key at `/.ssh/authorized_keys` instead of editing `/etc/passwd`.
-- netbird is a statically-linked Go binary needing only `/dev/net/tun` (present on stock kernel), no in-kernel WireGuard module. `netbird service install` targets systemd/upstart/launchd, none of which exist here, so the daemon is started manually (`netbird service run` via `nohup setsid`) and hooked into `rcS` by hand.
+```sh
+echo 'pkill netbird; rm -rf /opt/netbird /usr/local/netbird /etc/netbird /etc/udev/rules.d/97-netbird.rules; sync' | ssh root@<device-ip>
+```
 
-## Troubleshooting
+Then remove the peer in the dashboard.
 
-**`x509: certificate signed by unknown authority`** — no CA bundle at `/etc/ssl/certs/ca-certificates.crt`. `install.sh` fixes this automatically; check `[ -s /etc/ssl/certs/ca-certificates.crt ]` if debugging manually.
+## Related
 
-**`failed to connect to daemon ... context deadline exceeded` on `netbird up`** — no daemon running. `netbird up`/`status` just talk to a background `netbird service run` process over `/var/run/netbird.sock`; start the daemon first.
-
-**Peer shows `NeedsLogin` after every reboot** — state dir landed on tmpfs (`/var/lib/netbird` by default). Point `--config` at a persistent path (`/etc/netbird/default.json`), which `install.sh` does automatically.
-
-**`ssh host "cmd"` / `scp` does nothing or hangs** — `ForceCommand` breaks both. Pipe commands through stdin instead of passing them as arguments. If it's the very first login ever, the forced script is waiting on an interactive password prompt; log in with a real terminal once first.
-
-**Pubkey auth fails despite correct `authorized_keys`** — the `/etc/passwd` homedir bug above. Confirm with `sshd -d -p 2222` run in the foreground and check the exact path it tries. Fix by mirroring the key at `/.ssh/authorized_keys`.
-
-**"rcS gets wiped every reboot, my autostart hook disappears"** — not a real wipe. No active restore mechanism exists (checked `/etc`, `/usr/local`, `strings` on `hindenburg`/`pickel`, the `mmcblk0p11` recovery partition, the `fs.md5sum` manifest — nothing). The edit just wasn't `fsync`'d before a power cycle. Always `sync` after editing `rcS` and reboot cleanly (`install.sh` does this).
-
-**`ssh-copy-id` fails with `ssh-ed25519: not found`** — BusyBox `/bin/sh` chokes on it. Append the pubkey manually: `echo "ssh-ed25519 AAAA... you" >> ~/.ssh/authorized_keys`.
-
-## Related projects
-
-[IKA3RUS/kobo-netbird](https://github.com/IKA3RUS/kobo-netbird) does the same thing for the Kobo Libra Colour.
+[IKA3RUS/kobo-netbird](https://github.com/IKA3RUS/kobo-netbird) installs netbird over SSH with an on-device script, and ships a `tun.ko` for models without `/dev/net/tun`.
 
 ## License
 
-MIT.
+[MIT](LICENSE)

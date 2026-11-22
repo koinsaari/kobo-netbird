@@ -30,21 +30,23 @@ until grep -q " /mnt/onboard " /proc/mounts || [ $i -ge 60 ]; do
 	i=$((i + 1))
 done
 
-# Move the key off the FAT partition, which anyone with a USB cable can read.
-if [ -f "$onboard/setup-key" ]; then
-	mv "$onboard/setup-key" "$state/setup-key"
-	chmod 600 "$state/setup-key"
+env="$onboard/env"
+cr=$(printf '\r')
+if [ -f "$env" ]; then
+	while IFS="=" read -r k v || [ -n "$k" ]; do
+		v=${v%"$cr"}
+		[ -n "$v" ] || continue
+		# Not exported: netbird would take it as --setup-key and reject --setup-key-file.
+		case "$k" in
+			NB_SETUP_KEY) (umask 077 && printf '%s\n' "$v" >"$state/setup-key") ;;
+			NB_MANAGEMENT_URL | NB_HOSTNAME) export "$k=$v" ;;
+		esac
+	done <"$env"
+	# Anyone with a USB cable can read the FAT partition.
+	sed -i 's/^NB_SETUP_KEY=.*/NB_SETUP_KEY=/' "$env"
 	sync
 fi
 [ -f "$state/setup-key" ] || exit 0
-
-if [ -f "$onboard/env" ]; then
-	while IFS='=' read -r k v; do
-		case "$k" in
-			NB_MANAGEMENT_URL | NB_HOSTNAME) export "$k=$v" ;;
-		esac
-	done <"$onboard/env"
-fi
 
 until "$nb" up --setup-key-file "$state/setup-key" >>"$state/log/enrol.log" 2>&1; do
 	sleep 30

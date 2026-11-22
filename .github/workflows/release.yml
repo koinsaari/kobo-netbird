@@ -7,41 +7,28 @@ on:
 permissions:
   contents: read
 
-env:
-  NETBIRD_VERSION: "0.83.1"
-
 jobs:
   bundle:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # No armv7 asset upstream; armv6 runs on the armv7 hardfp Kobos.
-      - name: Fetch netbird, checksum-verified
-        run: |
-          base=https://github.com/netbirdio/netbird/releases/download/v$NETBIRD_VERSION
-          asset=netbird_${NETBIRD_VERSION}_linux_armv6.tar.gz
-          curl -fsSLO "$base/$asset"
-          curl -fsSL "$base/netbird_${NETBIRD_VERSION}_checksums.txt" | grep " $asset\$" | sha256sum -c -
-          mkdir -p rootfs/opt/netbird
-          tar -xzf "$asset" -C rootfs/opt/netbird netbird
+      - run: make
 
-      # Stock firmware ships no CA bundle, which breaks netbird's TLS.
-      - name: Fetch the CA bundle, checksum-verified
-        run: |
-          curl -fsSLO https://curl.se/ca/cacert.pem
-          curl -fsSL https://curl.se/ca/cacert.pem.sha256 | sha256sum -c -
-          install -D -m 0644 cacert.pem rootfs/etc/ssl/certs/ca-certificates.crt
-
-      - name: Pack KoboRoot.tgz
-        run: |
-          tar --owner=0 --group=0 --numeric-owner --sort=name -czf KoboRoot.tgz -C rootfs etc opt usr
-          sha256sum KoboRoot.tgz > KoboRoot.tgz.sha256
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            build/KoboRoot.tgz
+            build/kobo-netbird.zip
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" KoboRoot.tgz KoboRoot.tgz.sha256 --generate-notes --notes "Bundles netbird $NETBIRD_VERSION."
+        run: |
+          gh release create "$GITHUB_REF_NAME" build/KoboRoot.tgz build/kobo-netbird.zip build/SHA256SUMS \
+            --generate-notes --notes "Bundles netbird $(sed -n 's/^NETBIRD_VERSION := //p' Makefile)."
